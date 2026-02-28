@@ -19,30 +19,66 @@ logger = logging.getLogger(__name__)
 
 def analyze_session_lengths(
     meta: pd.DataFrame,
+    window_cfg: dict | None = None,
 ) -> dict:
     """Analyze session length distribution for windowing decisions.
 
     Args:
         meta: DataFrame with 'session_id' and 'timestamp' columns
+        window_cfg: optional config; if session_mode=='index_fallback' then no raise on collapse
 
     Returns:
         dict with statistics about session lengths
     """
-    if "session_id" not in meta.columns or meta["session_id"].iloc[0] == "none":
-        logger.warning("No valid session IDs — session analysis skipped.")
-        return {
+    if "session_id" not in meta.columns or (len(meta) > 0 and meta["session_id"].iloc[0] == "none"):
+        stats = {
             "has_sessions": False,
             "total_sessions": 0,
+            "total_flows": len(meta),
             "median_length": 0,
             "mean_length": 0,
             "recommended_mode": "per_flow",
         }
+        index_fallback = (window_cfg or {}).get("session_mode") == "index_fallback"
+        if index_fallback:
+            logger.warning(
+                "No valid session IDs — session analysis skipped (session_mode=index_fallback)."
+            )
+            return stats
+        raise RuntimeError(
+            "SESSION COLLAPSE DETECTED: No valid sessions found. "
+            "Check column name normalization for src_ip/dst_ip/protocol/timestamp. "
+            "Inspect raw column names with: pd.read_csv(path, nrows=0).columns.tolist()"
+        )
 
     session_lengths = meta.groupby("session_id").size()
+    total_sessions = len(session_lengths)
+    total_flows = len(meta)
+
+    if total_sessions == 1:
+        index_fallback = (window_cfg or {}).get("session_mode") == "index_fallback"
+        if index_fallback:
+            logger.warning(
+                "All %d flows mapped to 1 session (session_mode=index_fallback).",
+                total_flows,
+            )
+            return {
+                "has_sessions": False,
+                "total_sessions": 0,
+                "total_flows": total_flows,
+                "median_length": 0,
+                "mean_length": 0,
+                "recommended_mode": "per_flow",
+            }
+        raise RuntimeError(
+            f"SESSION COLLAPSE DETECTED: All {total_flows} flows mapped to 1 session. "
+            "Session key (src_ip, dst_ip, protocol) is constant — likely column detection failure."
+        )
+
     stats = {
         "has_sessions": True,
-        "total_sessions": len(session_lengths),
-        "total_flows": len(meta),
+        "total_sessions": total_sessions,
+        "total_flows": total_flows,
         "median_length": float(session_lengths.median()),
         "mean_length": float(session_lengths.mean()),
         "min_length": int(session_lengths.min()),
@@ -54,11 +90,16 @@ def analyze_session_lengths(
         "pct_sessions_ge5": float((session_lengths >= 5).mean() * 100),
     }
 
+    flows_per_session = total_flows / total_sessions
+    if flows_per_session > 10000:
+        logger.warning(
+            "Suspiciously large sessions: %.0f flows/session avg. Possible partial collapse.",
+            flows_per_session,
+        )
+
     if stats["median_length"] >= 3:
         stats["recommended_mode"] = "session"
-        stats["recommended_window"] = min(
-            int(stats["median_length"]), 15
-        )
+        stats["recommended_window"] = min(int(stats["median_length"]), 15)
     else:
         stats["recommended_mode"] = "per_flow"
         stats["recommended_window"] = 1

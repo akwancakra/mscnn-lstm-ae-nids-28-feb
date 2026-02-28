@@ -126,8 +126,8 @@ def reshape_for_conv1d(X: np.ndarray) -> np.ndarray:
 
 
 def compute_latent_dim(n_features: int) -> int:
-    """Compute latent dimension: max(8, n_features // 4)."""
-    return max(8, n_features // 4)
+    """Compute latent dimension: max(12, n_features // 3)."""
+    return max(12, n_features // 3)
 
 
 class PreprocessingPipeline:
@@ -298,7 +298,7 @@ def load_and_prepare_benign_train(
                     chunk = chunk[benign_mask]
                 if len(chunk) == 0:
                     continue
-                meta = extract_session_metadata(chunk, session_cfg)
+                meta = extract_session_metadata(chunk, session_cfg, dataset_name="CIC")
                 avail_feats = [c for c in shared_features if c in chunk.columns]
                 dfs.append(chunk[avail_feats])
                 metas.append(meta)
@@ -332,6 +332,7 @@ def load_all_labeled(
     session_cfg: dict,
     column_mapper: Optional[dict[str, str]] = None,
     chunksize: int = 50000,
+    dataset_name: str = "dataset",
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
     """Load ALL data (benign + attack) from files, returning features, labels, metadata."""
     dfs = []
@@ -344,7 +345,7 @@ def load_all_labeled(
                 labels_list.append(lab)
             else:
                 labels_list.append(pd.Series(["UNKNOWN"] * len(chunk)))
-            meta = extract_session_metadata(chunk, session_cfg)
+            meta = extract_session_metadata(chunk, session_cfg, dataset_name=dataset_name)
             avail = [c for c in features if c in chunk.columns]
             dfs.append(chunk[avail])
             metas.append(meta)

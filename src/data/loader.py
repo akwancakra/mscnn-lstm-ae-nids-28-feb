@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +18,9 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# Emit session warning once per (dataset_name, missing_cols) to reduce log noise
+_session_warning_shown: set = set()
 
 
 def canonical_key(name: str) -> str:
@@ -93,16 +97,36 @@ def detect_label_column(columns: list[str], candidates: list[str]) -> Optional[s
 def _resolve_session_col(
     columns: list[str], aliases: list[str]
 ) -> Optional[str]:
-    """Find a session-relevant column by checking aliases."""
+    """Find a session-relevant column by checking aliases (normalized: strip+lower, then canonical)."""
     col_lower = {c.strip().lower(): c for c in columns}
+    col_canon: dict[str, str] = {}
+    for c in columns:
+        k = canonical_key(c)
+        if k not in col_canon:
+            col_canon[k] = c
     for alias in aliases:
-        if alias.strip().lower() in col_lower:
-            return col_lower[alias.strip().lower()]
+        a = alias.strip().lower()
+        if a in col_lower:
+            return col_lower[a]
+        k = canonical_key(alias)
+        if k in col_canon:
+            return col_canon[k]
     return None
 
 
+def _warn_session_once(dataset_name: str, missing: list[str]) -> None:
+    """Log session warning once per (dataset_name, missing_cols)."""
+    key = (dataset_name, tuple(sorted(missing)))
+    if key not in _session_warning_shown:
+        logger.warning(
+            "Cannot build sessions for '%s' — missing: %s. Using per-flow fallback.",
+            dataset_name, missing,
+        )
+        _session_warning_shown.add(key)
+
+
 def extract_session_metadata(
-    df: pd.DataFrame, cfg_session: dict
+    df: pd.DataFrame, cfg_session: dict, dataset_name: str = "dataset"
 ) -> pd.DataFrame:
     """Extract session columns and create session_id.
 
@@ -124,8 +148,8 @@ def extract_session_metadata(
             + df[proto_col].astype(str)
         ).apply(lambda x: hashlib.md5(x.encode()).hexdigest()[:12])
         logger.info(
-            "Session IDs built from: %s, %s, %s",
-            src_ip_col, dst_ip_col, proto_col,
+            "Session columns detected: src_ip=%s, dst_ip=%s, protocol=%s, timestamp=%s",
+            src_ip_col, dst_ip_col, proto_col, ts_col,
         )
     else:
         meta["session_id"] = "none"
@@ -136,24 +160,26 @@ def extract_session_metadata(
             missing.append("dst_ip")
         if not proto_col:
             missing.append("protocol")
-        logger.warning(
-            "Cannot build sessions — missing columns: %s. Using per-flow mode.",
-            missing,
-        )
+        _warn_session_once(dataset_name, missing)
 
     if ts_col:
         ts_raw = df[ts_col]
         ts_numeric = pd.to_numeric(ts_raw, errors="coerce")
         if ts_numeric.isna().all():
             try:
-                ts_numeric = pd.to_datetime(ts_raw).astype(np.int64) // 10**9
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore", message=".*Parsing dates.*", category=UserWarning
+                    )
+                    ts_numeric = pd.to_datetime(ts_raw, dayfirst=True).astype(np.int64) // 10**9
             except Exception:
                 ts_numeric = pd.Series(np.arange(len(df)), index=df.index)
                 logger.warning("Timestamp parsing failed, using row index as proxy.")
         meta["timestamp"] = ts_numeric.values
     else:
         meta["timestamp"] = np.arange(len(df))
-        logger.warning("No timestamp column found, using row index as proxy.")
+        if "timestamp" not in str(cfg_session.get("timestamp", [])):
+            logger.debug("No timestamp column found, using row index as proxy.")
 
     return meta
 

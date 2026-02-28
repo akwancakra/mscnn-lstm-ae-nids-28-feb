@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 
 
 def compute_temporal_latent_dim(latent_dim: int) -> int:
-    """Compute temporal bottleneck: max(2, latent_dim // 4)."""
-    return max(2, latent_dim // 4)
+    """Compute temporal bottleneck: max(8, latent_dim // 2)."""
+    return max(8, latent_dim // 2)
 
 
 def build_bilstm_ae(

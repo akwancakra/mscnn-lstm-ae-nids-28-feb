@@ -43,6 +43,8 @@ windowing:
   window_size: 10
   min_session_length: 3
   fallback_mode: index
+  # Set to index_fallback to allow run when session columns are missing (no raise)
+  session_mode: index_fallback
 
 stage1:
   latent_dim: auto

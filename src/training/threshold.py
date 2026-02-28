@@ -26,20 +26,22 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ErrorNormalizer:
-    """Fitted normalizer: stores mean/std from benign validation errors."""
+    """Fitted normalizer: log1p then z-score on benign validation errors."""
     mean: float = 0.0
     std: float = 1.0
 
     def fit(self, errors: np.ndarray) -> "ErrorNormalizer":
-        self.mean = float(np.mean(errors))
-        self.std = float(np.std(errors))
+        log_errors = np.log1p(np.asarray(errors, dtype=float))
+        self.mean = float(np.mean(log_errors))
+        self.std = float(np.std(log_errors))
         if self.std < 1e-12:
             self.std = 1.0
         return self
 
     def transform(self, errors: np.ndarray) -> np.ndarray:
-        """Z-score normalize using fitted mean/std, then clip to [0, ~]."""
-        z = (errors - self.mean) / self.std
+        """Log1p then z-score using fitted mean/std, then clip to [0, ~]."""
+        log_errors = np.log1p(np.asarray(errors, dtype=float))
+        z = (log_errors - self.mean) / self.std
         return np.clip(z, 0, None)
 
     def to_dict(self) -> dict:
@@ -50,12 +52,59 @@ class ErrorNormalizer:
         return cls(mean=d["mean"], std=d["std"])
 
 
+def recalibrate_threshold(
+    base_threshold: float,
+    base_benign_scores: np.ndarray,
+    target_sample_scores: np.ndarray,
+) -> float:
+    """Recalibrate threshold for domain shift via percentile transfer.
+
+    Finds the percentile of base_threshold in base_benign_scores, then returns
+    the same percentile value from target_sample_scores (e.g. CSE unlabeled).
+    """
+    base_benign_scores = np.asarray(base_benign_scores, dtype=float).ravel()
+    target_sample_scores = np.asarray(target_sample_scores, dtype=float).ravel()
+    if len(base_benign_scores) == 0 or len(target_sample_scores) == 0:
+        logger.warning("recalibrate_threshold: empty scores, returning base_threshold")
+        return base_threshold
+    p = sp_stats.percentileofscore(base_benign_scores, base_threshold, kind="rank")
+    new_t = float(np.percentile(target_sample_scores, p))
+    logger.info(
+        "Recalibrated threshold: base=%.6f -> target percentile %.2f -> %.6f",
+        base_threshold, p, new_t,
+    )
+    return new_t
+
+
+def find_best_alpha(
+    s1_benign: np.ndarray,
+    s2_benign: np.ndarray,
+    norm1: ErrorNormalizer,
+    norm2: ErrorNormalizer | None,
+    alphas: list[float] | None = None,
+) -> float:
+    """Choose alpha that minimizes (p95 - mean) / std of benign combined scores (tightest)."""
+    if norm2 is None or len(s2_benign) == 0:
+        return 0.7
+    if alphas is None:
+        alphas = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    best_alpha = 0.5
+    best_metric = np.inf
+    for a in alphas:
+        combined = combine_scores(s1_benign, s2_benign, norm1, norm2, alpha=a)
+        mean, std = float(combined.mean()), float(combined.std())
+        if std < 1e-12:
+            continue
+        p95 = float(np.percentile(combined, 95))
+        metric = (p95 - mean) / std
+        if metric < best_metric:
+            best_metric = metric
+            best_alpha = a
+    logger.info("find_best_alpha: best alpha=%.2f (min (p95-mean)/std = %.4f)", best_alpha, best_metric)
+    return best_alpha
+
+
 def fit_normalizers(
-    errors_s1: np.ndarray,
-    errors_s2: np.ndarray | None,
-) -> tuple[ErrorNormalizer, ErrorNormalizer | None]:
-    """Fit normalizers on benign validation errors."""
-    norm1 = ErrorNormalizer().fit(errors_s1)
     logger.info("S1 normalizer: mean=%.6f, std=%.6f", norm1.mean, norm1.std)
     norm2 = None
     if errors_s2 is not None and len(errors_s2) > 0:

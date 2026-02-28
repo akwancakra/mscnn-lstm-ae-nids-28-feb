@@ -151,6 +151,37 @@ def train_stage1(
     return model, encoder, history
 
 
+def check_latent_health(latent: np.ndarray, name: str = "latent") -> None:
+    """Raise if latent vectors are unhealthy for training (NaN/Inf/extreme variance)."""
+    n_nan = int(np.isnan(latent).sum())
+    n_inf = int(np.isinf(latent).sum())
+    std_per_dim = latent.std(axis=0)
+    max_std = float(std_per_dim.max())
+    dead_dims = int((std_per_dim < 1e-6).sum())
+
+    errors = []
+    if n_nan > 0:
+        errors.append(f"NaN: {n_nan} values ({100 * n_nan / latent.size:.1f}%)")
+    if n_inf > 0:
+        errors.append(f"Inf: {n_inf} values")
+    if max_std > 100:
+        errors.append(f"Extreme variance: max_std={max_std:.1f} (expected < 10)")
+
+    if errors:
+        raise ValueError(f"Latent health check FAILED for '{name}': {'; '.join(errors)}")
+
+    if dead_dims > 0:
+        logger.warning(
+            "Latent '%s': %d/%d dimensions are dead (std < 1e-6)",
+            name, dead_dims, latent.shape[1],
+        )
+
+    logger.info(
+        "Latent health OK '%s': shape=%s, mean=%.3f, std=%.3f, max_std_per_dim=%.3f",
+        name, latent.shape, float(latent.mean()), float(latent.std()), max_std,
+    )
+
+
 def extract_latent_vectors(
     encoder: keras.Model,
     X: np.ndarray,

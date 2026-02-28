@@ -67,6 +67,7 @@ def run_pipeline(cfg: dict) -> dict:
     )
     from src.model.lstm_ae import compute_temporal_latent_dim
     from src.training.trainer import (
+        check_latent_health,
         compute_stage1_errors,
         compute_stage2_errors,
         extract_latent_vectors,
@@ -77,6 +78,7 @@ def run_pipeline(cfg: dict) -> dict:
         ErrorNormalizer,
         combine_scores,
         compute_all_thresholds,
+        find_best_alpha,
         fit_normalizers,
     )
     from src.evaluation.metrics import (
@@ -227,6 +229,7 @@ def run_pipeline(cfg: dict) -> dict:
             cse_files, pipeline.feature_names, cse_label, session_cfg,
             column_mapper=cse_mapper,
             chunksize=pp_cfg.get("chunksize", 50000),
+            dataset_name="CSE",
         )
         cse_benign_mask = binary_labels(y_cse_all, benign_label) == 0
         X_cse_benign_scaled = pipeline.transform(
@@ -267,7 +270,9 @@ def run_pipeline(cfg: dict) -> dict:
 
     # Extract latent vectors
     latent_train = extract_latent_vectors(s1_encoder, X_train)
+    check_latent_health(latent_train, "latent_train")
     latent_val = extract_latent_vectors(s1_encoder, X_val)
+    check_latent_health(latent_val, "latent_val")
 
     err_s1_train = compute_stage1_errors(s1_model, X_train)
     err_s1_val = compute_stage1_errors(s1_model, X_val)
@@ -288,7 +293,7 @@ def run_pipeline(cfg: dict) -> dict:
     logger.info("SESSION ANALYSIS & WINDOWING")
     logger.info("=" * 60)
 
-    session_stats_train = analyze_session_lengths(meta_train)
+    session_stats_train = analyze_session_lengths(meta_train, window_cfg)
     report["session_stats"] = session_stats_train
 
     plot_session_lengths(
@@ -339,7 +344,7 @@ def run_pipeline(cfg: dict) -> dict:
 
     err_s2_val = compute_stage2_errors(s2_model, windows_val)
 
-    alpha = scoring_cfg.get("alpha", 0.5)
+    alpha_cfg = scoring_cfg.get("alpha", 0.5)
 
     if eff_W > 1:
         n_flows_covered = len(err_s2_val) * eff_W
@@ -350,9 +355,17 @@ def run_pipeline(cfg: dict) -> dict:
 
         s1_per_window = err_s1_val_for_combine[:len(err_s2_val) * eff_W].reshape(-1, eff_W).mean(axis=1)
         norm1, norm2 = fit_normalizers(s1_per_window, err_s2_val)
+        if alpha_cfg == "auto":
+            alpha = find_best_alpha(s1_per_window, err_s2_val, norm1, norm2)
+        else:
+            alpha = float(alpha_cfg)
         benign_combined = combine_scores(s1_per_window, err_s2_val, norm1, norm2, alpha=alpha)
     else:
         norm1, norm2 = fit_normalizers(err_s1_val, err_s2_val)
+        if alpha_cfg == "auto":
+            alpha = find_best_alpha(err_s1_val, err_s2_val, norm1, norm2)
+        else:
+            alpha = float(alpha_cfg)
         benign_combined = combine_scores(err_s1_val, err_s2_val, norm1, norm2, alpha=alpha)
 
     threshold_results = compute_all_thresholds(benign_combined, cfg)
@@ -400,6 +413,7 @@ def run_pipeline(cfg: dict) -> dict:
         norm1, norm2,
         dataset_name="CSE-2018", results_dir=results_dir,
         column_mapper=cse_mapper, chunksize=pp_cfg.get("chunksize", 50000),
+        base_benign_scores=benign_combined,
     )
     report["cse_metrics"] = cse_metrics
 
@@ -442,6 +456,8 @@ def run_pipeline(cfg: dict) -> dict:
         "cse_pr_auc": cse_metrics.get("pr_auc", 0),
         "cic_f1": cic_metrics.get("f1", 0),
         "cse_f1": cse_metrics.get("f1", 0),
+        "cic_per_flow_roc_auc": cic_metrics.get("per_flow_roc_auc"),
+        "cse_per_flow_roc_auc": cse_metrics.get("per_flow_roc_auc"),
         "auc_drop": cic_metrics.get("roc_auc", 0) - cse_metrics.get("roc_auc", 0),
         "f1_drop": cic_metrics.get("f1", 0) - cse_metrics.get("f1", 0),
     }
@@ -476,6 +492,7 @@ def _evaluate_dataset(
     norm1, norm2,
     dataset_name, results_dir,
     column_mapper=None, chunksize=50000,
+    base_benign_scores=None,
 ) -> tuple[dict, dict]:
     """Evaluate a full dataset through both stages."""
     from src.data.preprocessing import load_all_labeled
@@ -485,11 +502,12 @@ def _evaluate_dataset(
         compute_stage2_errors,
         extract_latent_vectors,
     )
-    from src.training.threshold import combine_scores
+    from src.training.threshold import combine_scores, recalibrate_threshold
     from src.evaluation.metrics import (
         binary_labels,
         compute_metrics,
         compute_pr_curve,
+        compute_roc_auc_safe,
         compute_roc_curve,
         per_attack_detection_rate,
     )
@@ -503,6 +521,7 @@ def _evaluate_dataset(
     X_raw, y_str, meta = load_all_labeled(
         csv_files, pipeline.feature_names, label_col, session_cfg,
         column_mapper=column_mapper, chunksize=chunksize,
+        dataset_name=dataset_name,
     )
 
     X_1d = pipeline.transform(X_raw, reshape_1d=True)
@@ -528,7 +547,29 @@ def _evaluate_dataset(
         eval_labels = y_bin
         eval_labels_str = y_str.values if hasattr(y_str, 'values') else y_str
 
+    _, was_inverted = compute_roc_auc_safe(eval_labels, scores)
+    if was_inverted:
+        scores = np.asarray(-scores, dtype=scores.dtype)
+
+    if base_benign_scores is not None and len(base_benign_scores) > 0:
+        target_sample = scores[: min(50000, len(scores))]
+        threshold = recalibrate_threshold(
+            threshold, base_benign_scores, target_sample,
+        )
+
     metrics = compute_metrics(eval_labels, scores, threshold, dataset_name)
+    metrics["score_inverted"] = was_inverted
+
+    # Per-flow evaluation (Stage 1 only, no windowing)
+    scores_per_flow = norm1.transform(err_s1)
+    _, pf_inverted = compute_roc_auc_safe(y_bin, scores_per_flow)
+    if pf_inverted:
+        scores_per_flow = np.asarray(-scores_per_flow, dtype=scores_per_flow.dtype)
+    pf_metrics = compute_metrics(y_bin, scores_per_flow, threshold, dataset_name + " (per-flow)")
+    metrics["per_flow_roc_auc"] = pf_metrics["roc_auc"]
+    metrics["per_flow_pr_auc"] = pf_metrics["pr_auc"]
+    metrics["per_flow_f1"] = pf_metrics["f1"]
+    metrics["per_flow_fpr"] = pf_metrics["fpr"]
 
     roc = compute_roc_curve(eval_labels, scores)
     pr = compute_pr_curve(eval_labels, scores)
@@ -582,8 +623,8 @@ def main():
     logger.info("=" * 60)
     logger.info("FINAL RESULTS SUMMARY")
     logger.info("=" * 60)
-    logger.info("CIC-2017 ROC-AUC: %.4f", report.get("cic_metrics", {}).get("roc_auc", 0))
-    logger.info("CSE-2018 ROC-AUC: %.4f", report.get("cse_metrics", {}).get("roc_auc", 0))
+    logger.info("CIC-2017 ROC-AUC: %.4f (per-flow: %s)", report.get("cic_metrics", {}).get("roc_auc", 0), report.get("cic_metrics", {}).get("per_flow_roc_auc"))
+    logger.info("CSE-2018 ROC-AUC: %.4f (per-flow: %s)", report.get("cse_metrics", {}).get("roc_auc", 0), report.get("cse_metrics", {}).get("per_flow_roc_auc"))
     logger.info("CIC-2017 F1:      %.4f", report.get("cic_metrics", {}).get("f1", 0))
     logger.info("CSE-2018 F1:      %.4f", report.get("cse_metrics", {}).get("f1", 0))
     logger.info("Generalization:   %s", report.get("generalization", {}).get("verdict", "N/A"))

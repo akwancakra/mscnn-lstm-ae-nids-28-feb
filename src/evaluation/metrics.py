@@ -27,6 +27,28 @@ from sklearn.metrics import (
 logger = logging.getLogger(__name__)
 
 
+def compute_roc_auc_safe(y_true: np.ndarray, scores: np.ndarray) -> tuple[float, bool]:
+    """Compute ROC-AUC with auto-inversion if AUC < 0.5 (score convention reversed).
+
+    Returns (auc, was_inverted). If was_inverted is True, caller should use -scores
+    for all subsequent metrics so that high score = attack consistently.
+    """
+    try:
+        auc_val = roc_auc_score(y_true, scores)
+    except ValueError:
+        return 0.0, False
+    inverted = False
+    if auc_val < 0.5:
+        logger.warning(
+            "ROC-AUC=%.4f < 0.5 — score convention reversed (high=benign?). Inverting scores.",
+            auc_val,
+        )
+        auc_val = roc_auc_score(y_true, -scores)
+        inverted = True
+        logger.info("After inversion: ROC-AUC=%.4f", auc_val)
+    return float(auc_val), inverted
+
+
 def binary_labels(labels: np.ndarray | pd.Series, benign_label: str = "BENIGN") -> np.ndarray:
     """Convert string labels to binary: 0=benign, 1=attack."""
     if isinstance(labels, pd.Series):
