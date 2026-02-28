@@ -1,4 +1,4 @@
-"""Training logic for Stage 1 (MSCNN-AE) and Stage 2 (LSTM-AE).
+"""Training logic for Stage 1 (MSCNN-AE) and Stage 2 (BiLSTM-AE).
 
 Both stages trained ONLY on benign CIC-IDS-2017 data.
 Stage 2 operates on latent vectors extracted from a trained Stage 1 encoder.
@@ -15,7 +15,7 @@ import tensorflow as tf
 from tensorflow import keras
 
 from src.model.mscnn_ae import build_mscnn_ae
-from src.model.lstm_ae import build_lstm_ae, compute_temporal_latent_dim
+from src.model.lstm_ae import build_bilstm_ae, compute_temporal_latent_dim
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +179,7 @@ def compute_stage1_errors(
 
 
 # =========================================================
-#  Stage 2: LSTM-AE
+#  Stage 2: BiLSTM-AE
 # =========================================================
 
 def train_stage2(
@@ -191,7 +191,7 @@ def train_stage2(
     models_dir: str,
     results_dir: str,
 ) -> tuple[keras.Model, keras.Model, keras.callbacks.History]:
-    """Train the LSTM/Dense Autoencoder (Stage 2).
+    """Train the BiLSTM/Dense Autoencoder (Stage 2).
 
     Args:
         windows_train: (N_train, W, latent_dim)
@@ -211,7 +211,7 @@ def train_stage2(
     if temporal_latent_dim == "auto":
         temporal_latent_dim = compute_temporal_latent_dim(latent_dim)
 
-    model, encoder = build_lstm_ae(
+    model, encoder = build_bilstm_ae(
         window_size=window_size,
         latent_dim=latent_dim,
         temporal_latent_dim=temporal_latent_dim,
@@ -225,7 +225,7 @@ def train_stage2(
     )
     model.compile(optimizer=optimizer, loss="mse")
 
-    ckpt_path = str(Path(models_dir) / "stage2_lstm_ae.keras")
+    ckpt_path = str(Path(models_dir) / "stage2_bilstm_ae.keras")
     callbacks = get_callbacks(
         checkpoint_path=ckpt_path,
         patience_es=s2.get("early_stopping_patience", 10),
@@ -249,7 +249,7 @@ def train_stage2(
         verbose=1,
     )
 
-    stage_name = "LSTM-AE" if window_size > 1 else "Dense-AE"
+    stage_name = "BiLSTM-AE" if window_size > 1 else "Dense-AE"
     plot_training_curves(
         history, title=f"Stage 2 — {stage_name}",
         save_path=str(Path(results_dir) / "stage2_training_curves.png"),

@@ -1,4 +1,4 @@
-"""Stage 2: LSTM Autoencoder for temporal pattern learning.
+"""Stage 2: Bidirectional LSTM Autoencoder (BiLSTM-AE) for temporal pattern learning.
 
 Operates on sequences of latent vectors from Stage 1.
 Input shape: (W, latent_dim) where W = window size.
@@ -6,8 +6,8 @@ Input shape: (W, latent_dim) where W = window size.
 When W=1 (per-flow fallback), uses a Dense Autoencoder instead.
 
 Architecture (W > 1):
-  Encoder: LSTM(32) -> Dropout(0.3) -> Dense(temporal_latent_dim, linear)
-  Decoder: RepeatVector(W) -> LSTM(32) -> Dropout(0.3) ->
+  Encoder: Bidirectional(LSTM(32)) -> Dropout(0.3) -> Dense(temporal_latent_dim, linear)
+  Decoder: RepeatVector(W) -> Bidirectional(LSTM(32)) -> Dropout(0.3) ->
            TimeDistributed(Dense(64) -> BN -> ReLU) ->
            TimeDistributed(Dense(latent_dim, linear))
 
@@ -32,20 +32,20 @@ def compute_temporal_latent_dim(latent_dim: int) -> int:
     return max(2, latent_dim // 4)
 
 
-def build_lstm_ae(
+def build_bilstm_ae(
     window_size: int,
     latent_dim: int,
     temporal_latent_dim: int | None = None,
     lstm_units: int = 32,
     dropout: float = 0.3,
 ) -> tuple[keras.Model, keras.Model]:
-    """Build LSTM-AE (or Dense-AE for W=1).
+    """Build BiLSTM-AE (or Dense-AE for W=1).
 
     Args:
         window_size: sequence length W
         latent_dim: dimension of each latent vector from Stage 1
         temporal_latent_dim: bottleneck for temporal compression
-        lstm_units: number of LSTM units
+        lstm_units: number of LSTM units per direction
         dropout: dropout rate
 
     Returns:
@@ -59,16 +59,20 @@ def build_lstm_ae(
 
     inp = layers.Input(shape=(window_size, latent_dim), name="seq_input")
 
-    # --- Encoder ---
-    x = layers.LSTM(lstm_units, return_sequences=False, name="enc_lstm")(inp)
+    # --- Encoder (Bidirectional LSTM) ---
+    x = layers.Bidirectional(
+        layers.LSTM(lstm_units, return_sequences=False), name="enc_bilstm"
+    )(inp)
     x = layers.Dropout(dropout, name="enc_dropout")(x)
     temporal_latent = layers.Dense(
         temporal_latent_dim, activation="linear", name="temporal_latent"
     )(x)
 
-    # --- Decoder ---
+    # --- Decoder (Bidirectional LSTM) ---
     x = layers.RepeatVector(window_size, name="dec_repeat")(temporal_latent)
-    x = layers.LSTM(lstm_units, return_sequences=True, name="dec_lstm")(x)
+    x = layers.Bidirectional(
+        layers.LSTM(lstm_units, return_sequences=True), name="dec_bilstm"
+    )(x)
     x = layers.Dropout(dropout, name="dec_dropout")(x)
     x = layers.TimeDistributed(
         layers.Dense(64, activation="relu"), name="dec_td_dense1"
@@ -80,13 +84,13 @@ def build_lstm_ae(
         layers.Dense(latent_dim, activation="linear"), name="dec_output"
     )(x)
 
-    model = keras.Model(inp, output, name="LSTM_AE")
-    encoder = keras.Model(inp, temporal_latent, name="LSTM_Encoder")
+    model = keras.Model(inp, output, name="BiLSTM_AE")
+    encoder = keras.Model(inp, temporal_latent, name="BiLSTM_Encoder")
 
     total_params = model.count_params()
     compression = (window_size * latent_dim) / temporal_latent_dim
     logger.info(
-        "LSTM-AE: input=(%d,%d), temporal_latent=%d, "
+        "BiLSTM-AE: input=(%d,%d), temporal_latent=%d, "
         "compression=%.1fx, params=%d",
         window_size, latent_dim, temporal_latent_dim,
         compression, total_params,

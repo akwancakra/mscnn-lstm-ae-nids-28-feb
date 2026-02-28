@@ -3,7 +3,7 @@
 Two-stage unsupervised anomaly detection for network intrusion detection:
 
 - **Stage 1**: Multi-Scale CNN Autoencoder (per-flow spatial features)
-- **Stage 2**: LSTM Autoencoder (temporal patterns on latent sequences)
+- **Stage 2**: BiLSTM Autoencoder (temporal patterns on latent sequences)
 
 **Training**: Benign CIC-IDS-2017 only  
 **Primary eval**: CSE-CIC-IDS-2018 (unseen)  

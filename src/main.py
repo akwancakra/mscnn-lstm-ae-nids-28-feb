@@ -8,7 +8,7 @@ Stages:
     2. Domain shift analysis (CIC vs CSE)
     3. Train Stage 1 MSCNN-AE
     4. Extract latent vectors, analyze sessions, create windows
-    5. Train Stage 2 LSTM-AE
+    5. Train Stage 2 BiLSTM-AE
     6. Compute combined anomaly scores & thresholds
     7. Evaluate on CIC-2017 all-label + CSE-2018 all-label
     8. Generate report
@@ -261,10 +261,10 @@ def run_pipeline(cfg: dict) -> dict:
     logger.info("Effective window size: W=%d", eff_W)
 
     # ============================================================
-    # 7. Train Stage 2 LSTM-AE
+    # 7. Train Stage 2 BiLSTM-AE
     # ============================================================
     logger.info("=" * 60)
-    logger.info("STAGE 2: LSTM/DENSE-AE TRAINING")
+    logger.info("STAGE 2: BiLSTM/DENSE-AE TRAINING")
     logger.info("=" * 60)
 
     s2_model, s2_encoder, s2_history = train_stage2(
@@ -277,7 +277,7 @@ def run_pipeline(cfg: dict) -> dict:
     )
 
     report["stage2"] = {
-        "model_type": "LSTM-AE" if eff_W > 1 else "Dense-AE",
+        "model_type": "BiLSTM-AE" if eff_W > 1 else "Dense-AE",
         "final_train_loss": float(s2_history.history["loss"][-1]),
         "final_val_loss": float(s2_history.history["val_loss"][-1]),
         "best_val_loss": float(min(s2_history.history["val_loss"])),
@@ -512,7 +512,7 @@ def _evaluate_dataset(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MSCNN-LSTM-AE NIDS Pipeline")
+    parser = argparse.ArgumentParser(description="MSCNN-BiLSTM-AE NIDS Pipeline")
     parser.add_argument(
         "--config", type=str, default="src/config.yaml",
         help="Path to config YAML file",
