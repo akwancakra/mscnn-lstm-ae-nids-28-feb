@@ -74,18 +74,25 @@ def ensure_dir(path: str | Path) -> Path:
     return p
 
 
+# Path keys that are resolved against data_root when set (raw data location).
+_DATA_ROOT_KEYS = ("data_raw_cic", "data_raw_cse")
+
+
 def resolve_paths(cfg: dict) -> dict:
-    """Resolve relative paths against drive_root when in Colab mode."""
+    """Resolve paths: data_raw_* against data_root (or drive_root); rest against drive_root."""
     runtime = cfg.get("runtime", {})
     if runtime.get("colab_mode", False):
         root = Path(runtime["drive_root"])
+        data_root = Path(runtime["data_root"]) if runtime.get("data_root") else root
     else:
         root = Path(".")
+        data_root = Path(runtime["data_root"]) if runtime.get("data_root") else root
 
     paths = cfg.get("paths", {})
     resolved = {}
     for key, val in paths.items():
-        resolved[key] = str(root / val)
+        base = data_root if key in _DATA_ROOT_KEYS else root
+        resolved[key] = str(base / val)
     cfg["_resolved_paths"] = resolved
     return cfg
 
