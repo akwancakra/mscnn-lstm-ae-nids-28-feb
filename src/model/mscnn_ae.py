@@ -102,12 +102,10 @@ def build_mscnn_ae(
     )(x)
     x = layers.BatchNormalization(name="dec_bn2")(x)
 
-    # Crop or pad to exact target shape
-    x = layers.Lambda(
-        lambda t: t[:, :nx, :ny, :],
-        output_shape=(nx, ny, 32),
-        name="dec_crop",
-    )(x)
+    # Force exact spatial shape (nx, ny) so output always matches input
+    def to_target_size(t, target_nx=nx, target_ny=ny):
+        return tf.image.resize(t, [target_nx, target_ny], method="bilinear")
+    x = layers.Lambda(to_target_size, name="dec_resize_to_target")(x)
 
     output = layers.Conv2DTranspose(
         1, (1, 1), padding="same",
