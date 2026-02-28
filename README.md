@@ -27,9 +27,9 @@ Two-stage unsupervised anomaly detection for network intrusion detection:
 ## Colab
 
 ```bash
-# Clone di Colab
-!git clone https://github.com/USERNAME_KAMU/mscnn-bilstm-ae-28-feb.git
-%cd mscnn-bilstm-ae-28-feb
+# Clone di Colab (ganti USERNAME_KAMU)
+!git clone https://github.com/USERNAME_KAMU/mscnn-lstm-ae-nids-28-feb.git
+%cd mscnn-lstm-ae-nids-28-feb
 ```
 
 Lalu jalankan `notebooks/colab_runner.ipynb` (atur path dataset di config).
