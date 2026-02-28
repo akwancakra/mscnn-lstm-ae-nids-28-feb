@@ -12,6 +12,7 @@ Architecture:
 from __future__ import annotations
 
 import logging
+import math
 
 import tensorflow as tf
 from tensorflow import keras
@@ -88,15 +89,12 @@ def build_mscnn_ae(
     )(x)
     x = layers.BatchNormalization(name="dec_bn1")(x)
 
-    # Upsample to target spatial dims if needed
+    # Upsample to reach (or slightly exceed) target spatial dims before cropping.
+    # Use ceil so that after upsampling we have >= nx, ny and dec_crop can trim.
     if min_spatial < max(nx, ny):
-        x = layers.UpSampling2D(
-            size=(
-                max(1, nx // min_spatial),
-                max(1, ny // min_spatial),
-            ),
-            name="dec_upsample",
-        )(x)
+        scale_x = max(1, math.ceil(nx / min_spatial))
+        scale_y = max(1, math.ceil(ny / min_spatial))
+        x = layers.UpSampling2D(size=(scale_x, scale_y), name="dec_upsample")(x)
 
     x = layers.Conv2DTranspose(
         32, (3, 3), padding="same",
