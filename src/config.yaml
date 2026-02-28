@@ -1,0 +1,83 @@
+runtime:
+  colab_mode: true
+  drive_root: /content/drive/MyDrive/mscnn-lstm-ae-nids
+  random_seed: 42
+
+paths:
+  data_raw_cic: data/raw/CIC-IDS2017
+  data_raw_cse: data/raw/CSE-CIC-IDS2018
+  data_processed: data/processed
+  models_dir: models
+  results_dir: results
+
+preprocessing:
+  drop_columns:
+    - Flow ID
+  session_columns:
+    src_ip: [Source IP, Src IP]
+    dst_ip: [Destination IP, Dst IP]
+    protocol: [Protocol]
+    timestamp: [Timestamp]
+  label_candidates: [Label, label, Class, class]
+  benign_label: BENIGN
+  scaler: robust
+  post_scale_clip: 5.0
+  fillna_strategy: median
+  feature_filter:
+    nzv_threshold: 1.0e-5
+    corr_threshold: 0.98
+  reshape_2d: auto
+  chunksize: 50000
+  max_rows_per_file: null
+  sample_frac: null
+
+windowing:
+  mode: auto
+  window_size: 5
+  min_session_length: 3
+  fallback_mode: per_flow
+
+stage1:
+  latent_dim: auto
+  conv_filters: [32, 32, 32]
+  conv_kernels: [1, 3, 5]
+  reduction_filters: 64
+  batch_size: 256
+  epochs: 100
+  learning_rate: 0.001
+  clipnorm: 1.0
+  early_stopping_patience: 10
+  reduce_lr_patience: 5
+  reduce_lr_factor: 0.5
+  min_lr: 1.0e-6
+
+stage2:
+  temporal_latent_dim: auto
+  lstm_units: 32
+  dropout: 0.3
+  batch_size: 256
+  epochs: 100
+  learning_rate: 0.001
+  clipnorm: 1.0
+  early_stopping_patience: 10
+  reduce_lr_patience: 5
+  reduce_lr_factor: 0.5
+  min_lr: 1.0e-6
+
+scoring:
+  alpha: 0.5
+  alpha_degenerate: 0.7
+  alpha_sweep: [0.3, 0.5, 0.7]
+
+threshold:
+  zscore_k: [1.5, 2.0, 2.5, 3.0]
+  percentiles: [95, 97, 99, 99.5]
+  iqr_k: [1.5, 2.0, 3.0]
+  target_fpr: 0.05
+
+evaluation:
+  batch_size: 512
+
+split:
+  val_size: 0.2
+  split_by_file: true
