@@ -1,4 +1,4 @@
-# MSCNN-BiLSTM-AE for Unsupervised NIDS
+# mscnn-bilstm-ae-28-feb
 
 Two-stage unsupervised anomaly detection for network intrusion detection:
 
@@ -9,11 +9,26 @@ Two-stage unsupervised anomaly detection for network intrusion detection:
 **Primary eval**: CSE-CIC-IDS-2018 (unseen)  
 **Secondary eval**: CIC-IDS-2017 all-label
 
+## Push ke GitHub (sekali saja)
+
+1. Buat repo baru di https://github.com/new  
+   - Name: **mscnn-bilstm-ae-28-feb**  
+   - Public  
+   - Jangan centang "Add a README" (repo kosong)
+
+2. Di folder project (PowerShell):
+   ```powershell
+   cd D:\Codingan\python\nids-projects\mscnn-lstm-ae-nids
+   git remote add origin https://github.com/USERNAME_KAMU/mscnn-bilstm-ae-28-feb.git
+   git push -u origin main
+   ```
+   Ganti `USERNAME_KAMU` dengan username GitHub kamu.
+
 ## Colab
 
 ```bash
 # Clone di Colab
-!git clone https://github.com/YOUR_USERNAME/mscnn-bilstm-ae-28-feb.git
+!git clone https://github.com/USERNAME_KAMU/mscnn-bilstm-ae-28-feb.git
 %cd mscnn-bilstm-ae-28-feb
 ```
 
