@@ -1,6 +1,6 @@
 runtime:
   colab_mode: true
-  drive_root: /content/drive/MyDrive/mscnn-lstm-ae-nids
+  drive_root: /content/drive/MyDrive/nids-mscnn-lstm-ae-28-feb
   random_seed: 42
 
 paths:
