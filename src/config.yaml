@@ -5,6 +5,10 @@ runtime:
   # Raw data root (optional). If set, data_raw_cic/cse resolved under this; else under drive_root
   data_root: /content/drive/MyDrive/nids-data
   random_seed: 42
+  # Skip preprocessing: load pipeline + train_val_2d.npz and meta parquets from data_processed
+  skip_preprocessing: true
+  # GPU: enable memory growth so TF uses GPU up to available memory
+  gpu_memory_growth: true
 
 paths:
   # Relative to data_root (or drive_root if data_root not set)

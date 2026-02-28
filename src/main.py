@@ -28,11 +28,13 @@ import pandas as pd
 from src.utils import (
     ensure_dir,
     get_path,
+    load_npz,
     load_yaml,
     resolve_paths,
     save_json,
     save_npz,
     set_global_seed,
+    setup_gpu,
     setup_logging,
 )
 
@@ -103,6 +105,7 @@ def run_pipeline(cfg: dict) -> dict:
     cfg = resolve_paths(cfg)
     seed = cfg.get("runtime", {}).get("random_seed", 42)
     set_global_seed(seed)
+    setup_gpu(cfg)
 
     models_dir = str(ensure_dir(get_path(cfg, "models_dir")))
     results_dir = str(ensure_dir(get_path(cfg, "results_dir")))
@@ -139,34 +142,78 @@ def run_pipeline(cfg: dict) -> dict:
     report["n_shared_features"] = len(shared_features)
     logger.info("Shared features: %d", len(shared_features))
 
-    # ============================================================
-    # 2. Load benign CIC-2017 train/val
-    # ============================================================
-    X_train_raw, X_val_raw, meta_train, meta_val = load_and_prepare_benign_train(
-        cic_files, shared_features, cic_label, benign_label, session_cfg,
-        chunksize=pp_cfg.get("chunksize", 50000),
-        val_size=split_cfg.get("val_size", 0.2),
-        split_by_file=split_cfg.get("split_by_file", True),
-    )
-    report["n_benign_train"] = len(X_train_raw)
-    report["n_benign_val"] = len(X_val_raw)
+    skip_preprocessing = cfg.get("runtime", {}).get("skip_preprocessing", False)
+    processed_path = Path(processed_dir)
+    pipeline_path = processed_path / "pipeline.joblib"
+    cache_npz_path = processed_path / "train_val_2d.npz"
+    meta_train_path = processed_path / "meta_train.parquet"
+    meta_val_path = processed_path / "meta_val.parquet"
 
-    # ============================================================
-    # 3. Fit preprocessing pipeline
-    # ============================================================
-    pipeline = PreprocessingPipeline(cfg)
-    pipeline.fit(X_train_raw, shared_features)
-    pipeline.save(Path(processed_dir) / "pipeline.joblib")
+    if skip_preprocessing:
+        # Load pipeline and cached arrays/meta; skip raw load and fit
+        if not pipeline_path.exists():
+            raise FileNotFoundError(
+                "skip_preprocessing requested but pipeline not found. "
+                f"Run once with skip_preprocessing=false to create {pipeline_path}"
+            )
+        if not cache_npz_path.exists():
+            raise FileNotFoundError(
+                "skip_preprocessing requested but train_val_2d.npz not found. "
+                f"Run once with skip_preprocessing=false to create {cache_npz_path}"
+            )
+        if not meta_train_path.exists() or not meta_val_path.exists():
+            raise FileNotFoundError(
+                "skip_preprocessing requested but meta_train.parquet or meta_val.parquet not found. "
+                "Run once with skip_preprocessing=false to create cache."
+            )
+        pipeline = PreprocessingPipeline(cfg).load(pipeline_path)
+        cache = load_npz(cache_npz_path)
+        X_train = cache["X_train"]
+        X_val = cache["X_val"]
+        meta_train = pd.read_parquet(meta_train_path)
+        meta_val = pd.read_parquet(meta_val_path)
+        report["n_benign_train"] = len(X_train)
+        report["n_benign_val"] = len(X_val)
+        report["n_features_original"] = pipeline.n_features_original
+        report["n_features_final"] = pipeline.n_features_final
+        report["reshape_2d"] = (pipeline.nx, pipeline.ny)
+        report["latent_dim"] = pipeline.latent_dim
+        report["feature_names"] = pipeline.feature_names
+        logger.info("Loaded cached preprocessing: pipeline, X_train %s, X_val %s", X_train.shape, X_val.shape)
+    else:
+        # ============================================================
+        # 2. Load benign CIC-2017 train/val
+        # ============================================================
+        X_train_raw, X_val_raw, meta_train, meta_val = load_and_prepare_benign_train(
+            cic_files, shared_features, cic_label, benign_label, session_cfg,
+            chunksize=pp_cfg.get("chunksize", 50000),
+            val_size=split_cfg.get("val_size", 0.2),
+            split_by_file=split_cfg.get("split_by_file", True),
+        )
+        report["n_benign_train"] = len(X_train_raw)
+        report["n_benign_val"] = len(X_val_raw)
 
-    report["n_features_original"] = pipeline.n_features_original
-    report["n_features_final"] = pipeline.n_features_final
-    report["reshape_2d"] = (pipeline.nx, pipeline.ny)
-    report["latent_dim"] = pipeline.latent_dim
-    report["feature_names"] = pipeline.feature_names
+        # ============================================================
+        # 3. Fit preprocessing pipeline
+        # ============================================================
+        pipeline = PreprocessingPipeline(cfg)
+        pipeline.fit(X_train_raw, shared_features)
+        pipeline.save(pipeline_path)
 
-    X_train = pipeline.transform(X_train_raw, reshape_2d=True)
-    X_val = pipeline.transform(X_val_raw, reshape_2d=True)
-    logger.info("Train shape: %s, Val shape: %s", X_train.shape, X_val.shape)
+        report["n_features_original"] = pipeline.n_features_original
+        report["n_features_final"] = pipeline.n_features_final
+        report["reshape_2d"] = (pipeline.nx, pipeline.ny)
+        report["latent_dim"] = pipeline.latent_dim
+        report["feature_names"] = pipeline.feature_names
+
+        X_train = pipeline.transform(X_train_raw, reshape_2d=True)
+        X_val = pipeline.transform(X_val_raw, reshape_2d=True)
+        logger.info("Train shape: %s, Val shape: %s", X_train.shape, X_val.shape)
+
+        save_npz(cache_npz_path, X_train=X_train, X_val=X_val)
+        meta_train.to_parquet(meta_train_path, index=False)
+        meta_val.to_parquet(meta_val_path, index=False)
+        logger.info("Saved preprocessing cache: train_val_2d.npz, meta_train/val.parquet")
 
     # ============================================================
     # 4. Domain shift analysis

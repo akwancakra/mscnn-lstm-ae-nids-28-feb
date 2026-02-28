@@ -67,6 +67,36 @@ def save_npz(path: str | Path, **arrays: np.ndarray) -> None:
     np.savez_compressed(path, **arrays)
 
 
+def load_npz(path: str | Path) -> dict[str, np.ndarray]:
+    """Load compressed npz and return dict of arrays."""
+    with np.load(path, allow_pickle=False) as data:
+        return dict(data)
+
+
+def setup_gpu(cfg: dict | None = None) -> bool:
+    """Configure TensorFlow to use GPU with memory growth. Call before building models."""
+    import logging
+    log = logging.getLogger(__name__)
+    if cfg is not None and not cfg.get("runtime", {}).get("gpu_memory_growth", True):
+        return False
+    try:
+        import tensorflow as tf
+    except ImportError:
+        log.warning("TensorFlow not installed; skipping GPU setup.")
+        return False
+    gpus = tf.config.list_physical_devices("GPU")
+    if not gpus:
+        log.info("No GPU found; using CPU.")
+        return False
+    for gpu in gpus:
+        try:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError:
+            pass
+    log.info("GPU enabled (memory growth): %s", [gpu.name for gpu in gpus])
+    return True
+
+
 def ensure_dir(path: str | Path) -> Path:
     """Create directory if it doesn't exist, return Path."""
     p = Path(path)
