@@ -7,7 +7,6 @@ No information from test/evaluation sets leaks into preprocessing.
 from __future__ import annotations
 
 import logging
-import math
 from pathlib import Path
 from typing import Optional
 
@@ -121,34 +120,14 @@ def apply_scaler(
     return X_clipped
 
 
-def compute_2d_shape(n_features: int) -> tuple[int, int]:
-    """Compute Nx x Ny reshape dimensions for Conv2D input.
-
-    Finds the most square-like factorization. Pads with zeros if needed.
-    """
-    sqrt_n = int(math.ceil(math.sqrt(n_features)))
-    for ny in range(sqrt_n, 0, -1):
-        if n_features % ny == 0:
-            nx = n_features // ny
-            return nx, ny
-    nx = sqrt_n
-    ny = sqrt_n
-    return nx, ny
-
-
-def reshape_for_conv2d(X: np.ndarray, nx: int, ny: int) -> np.ndarray:
-    """Reshape (N, n_features) -> (N, nx, ny, 1) with zero-padding if needed."""
-    n_features = X.shape[1]
-    target = nx * ny
-    if n_features < target:
-        pad_width = target - n_features
-        X = np.pad(X, ((0, 0), (0, pad_width)), mode="constant", constant_values=0.0)
-    return X[:, :target].reshape(-1, nx, ny, 1)
+def reshape_for_conv1d(X: np.ndarray) -> np.ndarray:
+    """Reshape (N, n_features) -> (N, n_features, 1) for Conv1D input."""
+    return X.reshape(-1, X.shape[1], 1)
 
 
 def compute_latent_dim(n_features: int) -> int:
-    """Compute latent dimension: max(4, n_features // 6)."""
-    return max(4, n_features // 6)
+    """Compute latent dimension: max(8, n_features // 4)."""
+    return max(8, n_features // 4)
 
 
 class PreprocessingPipeline:
@@ -160,8 +139,6 @@ class PreprocessingPipeline:
         self.medians: Optional[pd.Series] = None
         self.scaler: Optional[RobustScaler] = None
         self.feature_names: list[str] = []
-        self.nx: int = 0
-        self.ny: int = 0
         self.n_features_original: int = 0
         self.n_features_final: int = 0
         self.latent_dim: int = 0
@@ -211,23 +188,23 @@ class PreprocessingPipeline:
         )
 
         self.scaler = fit_scaler(X)
-        self.nx, self.ny = compute_2d_shape(self.n_features_final)
         self.latent_dim = compute_latent_dim(self.n_features_final)
 
         logger.info(
-            "2D reshape: (%d features) -> (%d x %d), latent_dim=%d",
-            self.n_features_final, self.nx, self.ny, self.latent_dim,
+            "Features: %d final, latent_dim=%d (compression=%.1fx)",
+            self.n_features_final, self.latent_dim,
+            self.n_features_final / self.latent_dim,
         )
 
         self._is_fitted = True
         return self
 
     def transform(
-        self, df: pd.DataFrame, reshape_2d: bool = True
+        self, df: pd.DataFrame, reshape_1d: bool = True
     ) -> np.ndarray:
         """Apply fitted preprocessing to a DataFrame.
 
-        Returns numpy array of shape (N, nx, ny, 1) or (N, n_features).
+        Returns numpy array of shape (N, n_features, 1) if reshape_1d else (N, n_features).
         """
         assert self._is_fitted, "Pipeline must be fit before transform"
         clip_val = self.pp_cfg.get("post_scale_clip", 5.0)
@@ -247,8 +224,8 @@ class PreprocessingPipeline:
 
         X_scaled = apply_scaler(X.values, self.scaler, clip_value=clip_val)
 
-        if reshape_2d:
-            return reshape_for_conv2d(X_scaled, self.nx, self.ny)
+        if reshape_1d:
+            return reshape_for_conv1d(X_scaled)
         return X_scaled
 
     def save(self, path: str | Path) -> None:
@@ -259,8 +236,6 @@ class PreprocessingPipeline:
             "medians": self.medians,
             "scaler": self.scaler,
             "feature_names": self.feature_names,
-            "nx": self.nx,
-            "ny": self.ny,
             "n_features_original": self.n_features_original,
             "n_features_final": self.n_features_final,
             "latent_dim": self.latent_dim,
@@ -275,11 +250,9 @@ class PreprocessingPipeline:
         self.medians = state["medians"]
         self.scaler = state["scaler"]
         self.feature_names = state["feature_names"]
-        self.nx = state["nx"]
-        self.ny = state["ny"]
         self.n_features_original = state["n_features_original"]
         self.n_features_final = state["n_features_final"]
-        self.latent_dim = state["latent_dim"]
+        self.latent_dim = state.get("latent_dim", compute_latent_dim(self.n_features_final))
         self.pp_cfg = state.get("pp_cfg", self.pp_cfg)
         self._is_fitted = True
         logger.info("Pipeline loaded from %s", path)

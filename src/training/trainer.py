@@ -75,7 +75,7 @@ def plot_training_curves(
 
 
 # =========================================================
-#  Stage 1: MSCNN-AE
+#  Stage 1: MSCNN-AE (Conv1D)
 # =========================================================
 
 def train_stage1(
@@ -88,8 +88,8 @@ def train_stage1(
     """Train the MSCNN Autoencoder (Stage 1).
 
     Args:
-        X_train: (N_train, nx, ny, 1) benign training data
-        X_val: (N_val, nx, ny, 1) benign validation data
+        X_train: (N_train, n_features, 1) benign training data
+        X_val: (N_val, n_features, 1) benign validation data
         cfg: full config dict
         models_dir: directory to save model checkpoints
         results_dir: directory to save plots
@@ -98,20 +98,19 @@ def train_stage1(
         (full_model, encoder, history)
     """
     s1 = cfg.get("stage1", {})
-    nx, ny = X_train.shape[1], X_train.shape[2]
+    n_features = X_train.shape[1]
 
-    n_features = nx * ny
     latent_dim = s1.get("latent_dim", "auto")
     if latent_dim == "auto":
         from src.data.preprocessing import compute_latent_dim
         latent_dim = compute_latent_dim(n_features)
 
     model, encoder = build_mscnn_ae(
-        nx=nx, ny=ny,
+        n_features=n_features,
         latent_dim=latent_dim,
-        conv_filters=s1.get("conv_filters", [32, 32, 32]),
+        conv_filters=s1.get("conv_filters", [64, 64, 64]),
         conv_kernels=s1.get("conv_kernels", [1, 3, 5]),
-        reduction_filters=s1.get("reduction_filters", 64),
+        reduction_filters=s1.get("reduction_filters", 128),
     )
 
     optimizer = keras.optimizers.Adam(
@@ -168,9 +167,12 @@ def compute_stage1_errors(
     X: np.ndarray,
     batch_size: int = 512,
 ) -> np.ndarray:
-    """Compute per-sample MSE reconstruction error for Stage 1."""
+    """Compute per-sample MSE reconstruction error for Stage 1.
+
+    Input shape: (N, n_features, 1) -> mean over axes (1, 2)
+    """
     X_recon = model.predict(X, batch_size=batch_size, verbose=0)
-    errors = np.mean((X - X_recon) ** 2, axis=(1, 2, 3))
+    errors = np.mean((X - X_recon) ** 2, axis=tuple(range(1, X.ndim)))
     logger.info(
         "Stage 1 errors: mean=%.6f, std=%.6f, max=%.6f",
         errors.mean(), errors.std(), errors.max(),
@@ -265,7 +267,7 @@ def compute_stage2_errors(
 ) -> np.ndarray:
     """Compute per-window MSE reconstruction error for Stage 2."""
     W_recon = model.predict(windows, batch_size=batch_size, verbose=0)
-    errors = np.mean((windows - W_recon) ** 2, axis=(1, 2))
+    errors = np.mean((windows - W_recon) ** 2, axis=tuple(range(1, windows.ndim)))
     logger.info(
         "Stage 2 errors: mean=%.6f, std=%.6f, max=%.6f",
         errors.mean(), errors.std(), errors.max(),

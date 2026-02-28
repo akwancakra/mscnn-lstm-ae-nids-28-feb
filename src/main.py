@@ -6,7 +6,7 @@ Usage:
 Stages:
     1. Load & preprocess benign CIC-IDS-2017 data
     2. Domain shift analysis (CIC vs CSE)
-    3. Train Stage 1 MSCNN-AE
+    3. Train Stage 1 MSCNN-AE (Conv1D)
     4. Extract latent vectors, analyze sessions, create windows
     5. Train Stage 2 BiLSTM-AE
     6. Compute combined anomaly scores & thresholds
@@ -74,9 +74,10 @@ def run_pipeline(cfg: dict) -> dict:
         train_stage2,
     )
     from src.training.threshold import (
+        ErrorNormalizer,
         combine_scores,
         compute_all_thresholds,
-        normalize_errors,
+        fit_normalizers,
     )
     from src.evaluation.metrics import (
         binary_labels,
@@ -145,12 +146,11 @@ def run_pipeline(cfg: dict) -> dict:
     skip_preprocessing = cfg.get("runtime", {}).get("skip_preprocessing", False)
     processed_path = Path(processed_dir)
     pipeline_path = processed_path / "pipeline.joblib"
-    cache_npz_path = processed_path / "train_val_2d.npz"
+    cache_npz_path = processed_path / "train_val_1d.npz"
     meta_train_path = processed_path / "meta_train.parquet"
     meta_val_path = processed_path / "meta_val.parquet"
 
     if skip_preprocessing:
-        # Load pipeline and cached arrays/meta; skip raw load and fit
         if not pipeline_path.exists():
             raise FileNotFoundError(
                 "skip_preprocessing requested but pipeline not found. "
@@ -158,12 +158,12 @@ def run_pipeline(cfg: dict) -> dict:
             )
         if not cache_npz_path.exists():
             raise FileNotFoundError(
-                "skip_preprocessing requested but train_val_2d.npz not found. "
+                "skip_preprocessing requested but train_val_1d.npz not found. "
                 f"Run once with skip_preprocessing=false to create {cache_npz_path}"
             )
         if not meta_train_path.exists() or not meta_val_path.exists():
             raise FileNotFoundError(
-                "skip_preprocessing requested but meta_train.parquet or meta_val.parquet not found. "
+                "skip_preprocessing requested but meta parquets not found. "
                 "Run once with skip_preprocessing=false to create cache."
             )
         pipeline = PreprocessingPipeline(cfg).load(pipeline_path)
@@ -176,7 +176,6 @@ def run_pipeline(cfg: dict) -> dict:
         report["n_benign_val"] = len(X_val)
         report["n_features_original"] = pipeline.n_features_original
         report["n_features_final"] = pipeline.n_features_final
-        report["reshape_2d"] = (pipeline.nx, pipeline.ny)
         report["latent_dim"] = pipeline.latent_dim
         report["feature_names"] = pipeline.feature_names
         logger.info("Loaded cached preprocessing: pipeline, X_train %s, X_val %s", X_train.shape, X_val.shape)
@@ -202,18 +201,17 @@ def run_pipeline(cfg: dict) -> dict:
 
         report["n_features_original"] = pipeline.n_features_original
         report["n_features_final"] = pipeline.n_features_final
-        report["reshape_2d"] = (pipeline.nx, pipeline.ny)
         report["latent_dim"] = pipeline.latent_dim
         report["feature_names"] = pipeline.feature_names
 
-        X_train = pipeline.transform(X_train_raw, reshape_2d=True)
-        X_val = pipeline.transform(X_val_raw, reshape_2d=True)
+        X_train = pipeline.transform(X_train_raw, reshape_1d=True)
+        X_val = pipeline.transform(X_val_raw, reshape_1d=True)
         logger.info("Train shape: %s, Val shape: %s", X_train.shape, X_val.shape)
 
         save_npz(cache_npz_path, X_train=X_train, X_val=X_val)
         meta_train.to_parquet(meta_train_path, index=False)
         meta_val.to_parquet(meta_val_path, index=False)
-        logger.info("Saved preprocessing cache: train_val_2d.npz, meta_train/val.parquet")
+        logger.info("Saved preprocessing cache: train_val_1d.npz, meta_train/val.parquet")
 
     # ============================================================
     # 4. Domain shift analysis
@@ -232,7 +230,7 @@ def run_pipeline(cfg: dict) -> dict:
         )
         cse_benign_mask = binary_labels(y_cse_all, benign_label) == 0
         X_cse_benign_scaled = pipeline.transform(
-            X_cse_benign_raw[cse_benign_mask].head(50000), reshape_2d=False,
+            X_cse_benign_raw[cse_benign_mask].head(50000), reshape_1d=False,
         )
 
         ks_df = ks_test_per_feature(
@@ -252,7 +250,7 @@ def run_pipeline(cfg: dict) -> dict:
     # 5. Train Stage 1 MSCNN-AE
     # ============================================================
     logger.info("=" * 60)
-    logger.info("STAGE 1: MSCNN-AE TRAINING")
+    logger.info("STAGE 1: MSCNN-AE TRAINING (Conv1D)")
     logger.info("=" * 60)
 
     s1_model, s1_encoder, s1_history = train_stage1(
@@ -351,13 +349,22 @@ def run_pipeline(cfg: dict) -> dict:
             err_s1_val_for_combine = err_s1_val
 
         s1_per_window = err_s1_val_for_combine[:len(err_s2_val) * eff_W].reshape(-1, eff_W).mean(axis=1)
-        benign_combined = combine_scores(s1_per_window, err_s2_val, alpha=alpha)
+        norm1, norm2 = fit_normalizers(s1_per_window, err_s2_val)
+        benign_combined = combine_scores(s1_per_window, err_s2_val, norm1, norm2, alpha=alpha)
     else:
-        benign_combined = combine_scores(err_s1_val, err_s2_val, alpha=alpha)
+        norm1, norm2 = fit_normalizers(err_s1_val, err_s2_val)
+        benign_combined = combine_scores(err_s1_val, err_s2_val, norm1, norm2, alpha=alpha)
 
     threshold_results = compute_all_thresholds(benign_combined, cfg)
     report["thresholds"] = threshold_results
     save_json(Path(results_dir) / "thresholds.json", threshold_results)
+
+    # Save normalizer stats for evaluation
+    norm_stats = {
+        "norm1": norm1.to_dict(),
+        "norm2": norm2.to_dict() if norm2 else None,
+    }
+    save_json(Path(processed_dir) / "normalizer_stats.json", norm_stats)
 
     selected_threshold = threshold_results["selected_threshold"]
     logger.info("Selected threshold: %.6f", selected_threshold)
@@ -373,6 +380,7 @@ def run_pipeline(cfg: dict) -> dict:
         cic_files, pipeline, s1_model, s1_encoder, s2_model,
         cic_label, session_cfg, session_stats_train, window_cfg,
         eff_W, alpha, selected_threshold, benign_label,
+        norm1, norm2,
         dataset_name="CIC-2017", results_dir=results_dir,
         column_mapper=None, chunksize=pp_cfg.get("chunksize", 50000),
     )
@@ -389,6 +397,7 @@ def run_pipeline(cfg: dict) -> dict:
         cse_files, pipeline, s1_model, s1_encoder, s2_model,
         cse_label, session_cfg, session_stats_train, window_cfg,
         eff_W, alpha, selected_threshold, benign_label,
+        norm1, norm2,
         dataset_name="CSE-2018", results_dir=results_dir,
         column_mapper=cse_mapper, chunksize=pp_cfg.get("chunksize", 50000),
     )
@@ -408,7 +417,6 @@ def run_pipeline(cfg: dict) -> dict:
         save_path=str(Path(results_dir) / "pr_curves_combined.png"),
     )
 
-    # Threshold comparison on CSE-2018
     if "y_true" in cse_curves and "scores" in cse_curves:
         comp_df = build_threshold_comparison_table(
             threshold_results, cse_curves["y_true"], cse_curves["scores"],
@@ -465,6 +473,7 @@ def _evaluate_dataset(
     csv_files, pipeline, s1_model, s1_encoder, s2_model,
     label_col, session_cfg, session_stats, window_cfg,
     eff_W, alpha, threshold, benign_label,
+    norm1, norm2,
     dataset_name, results_dir,
     column_mapper=None, chunksize=50000,
 ) -> tuple[dict, dict]:
@@ -496,11 +505,11 @@ def _evaluate_dataset(
         column_mapper=column_mapper, chunksize=chunksize,
     )
 
-    X_2d = pipeline.transform(X_raw, reshape_2d=True)
+    X_1d = pipeline.transform(X_raw, reshape_1d=True)
     y_bin = binary_labels(y_str, benign_label)
 
-    err_s1 = compute_stage1_errors(s1_model, X_2d)
-    latent = extract_latent_vectors(s1_encoder, X_2d)
+    err_s1 = compute_stage1_errors(s1_model, X_1d)
+    latent = extract_latent_vectors(s1_encoder, X_1d)
 
     windows, window_labels, _ = create_windows(
         latent, meta, session_stats, window_cfg, labels=y_bin,
@@ -511,11 +520,11 @@ def _evaluate_dataset(
     if eff_W > 1 and window_labels is not None:
         n_windows = len(err_s2)
         s1_per_window = err_s1[:n_windows * eff_W].reshape(-1, eff_W).mean(axis=1)
-        scores = combine_scores(s1_per_window, err_s2, alpha=alpha)
+        scores = combine_scores(s1_per_window, err_s2, norm1, norm2, alpha=alpha)
         eval_labels = window_labels
         eval_labels_str = np.where(window_labels == 0, "BENIGN", "ATTACK")
     else:
-        scores = combine_scores(err_s1, err_s2, alpha=alpha)
+        scores = combine_scores(err_s1, err_s2, norm1, norm2, alpha=alpha)
         eval_labels = y_bin
         eval_labels_str = y_str.values if hasattr(y_str, 'values') else y_str
 
